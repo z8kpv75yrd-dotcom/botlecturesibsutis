@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Журнал посещаемости</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{
+  --bg:var(--tg-theme-bg-color,#fff);--text:var(--tg-theme-text-color,#111);--hint:var(--tg-theme-hint-color,#777);
+  --card:var(--tg-theme-secondary-bg-color,#f2f2f4);--btn:var(--tg-theme-button-color,#2a7de1);
+  --btntext:var(--tg-theme-button-text-color,#fff);--ok:#2e9d57;--bad:#d9453d;--accent:#2a7de1;
+}
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+body{background:var(--bg);color:var(--text);font:16px/1.45 -apple-system,system-ui,Roboto,sans-serif;padding-bottom:40px}
+.wrap{padding:0 16px;max-width:560px;margin:0 auto}
+.hero{padding:22px 16px 16px;background:var(--card);border-radius:0 0 24px 24px;margin-bottom:8px}
+.hero h1{font-size:22px;line-height:1.2}.hero p{color:var(--hint);font-size:14px;margin-top:2px}
+h2{font-size:18px;margin:20px 0 10px}
+.card{background:var(--card);border-radius:16px;padding:14px;margin-bottom:10px}
+.card.click{cursor:pointer}
+.card small,.hint{color:var(--hint);font-size:13px}
+.time{font-weight:700;color:var(--accent);font-size:14px}
+.row{display:flex;gap:8px;align-items:center}.row>*{flex:1}.row .fix{flex:none}
+.tabs{display:flex;gap:8px;margin:12px 0}
+.tabs button{flex:1;padding:10px;border-radius:12px;border:0;background:var(--card);color:var(--text);font:600 15px inherit;font-family:inherit}
+.tabs button.on{background:var(--btn);color:var(--btntext)}
+.nav{display:flex;align-items:center;justify-content:space-between;margin:12px 0}
+.nav b{text-transform:capitalize}
+.nav button,.b{border:0;border-radius:12px;padding:10px 14px;background:var(--card);color:var(--text);font:600 15px inherit;font-family:inherit;cursor:pointer}
+.b.main{background:var(--btn);color:var(--btntext);width:100%;padding:13px}
+.b.ok.on{background:var(--ok);color:#fff}.b.bad.on{background:var(--bad);color:#fff}
+.b:disabled{opacity:.4}.b.sm{padding:6px 10px}.b.del{color:var(--bad)}
+.acts{display:flex;gap:8px;margin-top:10px}.acts .b{flex:1;background:var(--bg)}
+.acts .b.ok.on,.acts .b.bad.on{color:#fff}
+input,textarea,select{width:100%;padding:12px 13px;border-radius:12px;border:1px solid transparent;background:var(--bg);color:var(--text);font:inherit;outline:none;margin-bottom:8px}
+.card input,.card textarea,.card select{background:var(--bg)}
+body>#app>.wrap>input,body>#app>.wrap>select{background:var(--card)}
+input:focus,textarea:focus,select:focus{border-color:var(--accent)}
+textarea{min-height:90px;resize:vertical}
+.chip{font-size:12px;border-radius:20px;padding:2px 10px;background:var(--bg);color:var(--hint)}
+.chip.present{background:var(--ok);color:#fff}.chip.absent{background:var(--bad);color:#fff}
+.st{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:9px 0;border-bottom:1px solid var(--bg)}
+.st:last-child{border:0}.st .nm{flex:1;min-width:0}
+.mini{display:flex;gap:4px}.mini .b{padding:6px 9px}
+#toast{position:fixed;left:16px;right:16px;bottom:20px;background:#222;color:#fff;border-radius:12px;padding:12px 14px;display:none;text-align:center;z-index:9}
+.empty{text-align:center;color:var(--hint);padding:30px 10px}
+</style>
+</head>
+<body>
+<div id="app"><div class="empty">Загрузка…</div></div>
+<div id="toast"></div>
+<script>
+const tg = window.Telegram.WebApp; tg.ready(); tg.expand();
+const app = document.getElementById("app"), toastEl = document.getElementById("toast");
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const val = id => document.getElementById(id).value;
+let me = null, st = {tab: "marks", gid: null, date: null, lesson: null, open: null, regGid: null};
+
+async function api(a, b = {}) {
+  const r = await fetch("/api/" + a, {method: "POST",
+    headers: {"Content-Type": "application/json", "X-Init-Data": tg.initData}, body: JSON.stringify(b)});
+  const j = await r.json().catch(() => ({error: "Ошибка сети"}));
+  if (!r.ok) throw new Error(j.error || "Ошибка");
+  return j;
+}
+let tt; function toast(t){ toastEl.textContent = t; toastEl.style.display = "block"; clearTimeout(tt); tt = setTimeout(() => toastEl.style.display = "none", 2800); }
+async function safe(fn){ try { return await fn(); } catch (e) { toast(e.message); } }
+
+function addDays(s, n){ const d = new Date(s + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); }
+function label(s){ return new Date(s + "T00:00:00Z").toLocaleDateString("ru-RU", {weekday: "long", day: "numeric", month: "long", timeZone: "UTC"}); }
+const dayNav = () => `<div class="nav"><button data-a="day" data-n="-1">‹</button><b>${label(st.date)}</b><button data-a="day" data-n="1">›</button></div>`;
+const sub = l => [l.teacher, l.room].filter(Boolean).map(esc).join(" · ");
+const hero = (t, p) => `<div class="hero"><h1>${esc(t)}</h1><p>${esc(p)}</p></div>`;
+
+// ---------- старт ----------
+async function init(){
+  me = await safe(() => api("me")); if (!me) return;
+  st.date = st.date || me.today;
+  render();
+}
+function render(){
+  if (me.owner) return safe(renderOwner);
+  if (!me.student) return safe(renderRegister);
+  return safe(renderStudent);
+}
+
+// ---------- регистрация студента ----------
+async function renderRegister(){
+  if (!me.groups.length){ app.innerHTML = hero("Журнал посещаемости", "Нужна регистрация") + `<div class="empty">Преподаватель пока не добавил группы.</div>`; return; }
+  st.regGid = st.regGid || me.groups[0].id;
+  const {students} = await api("free", {group_id: st.regGid});
+  app.innerHTML = hero("Кто вы?", "Выберите группу и своё имя") + `<div class="wrap">
+    <select id="rg" data-a="regGroup" style="margin-top:12px;background:var(--card)">${me.groups.map(g => `<option value="${g.id}" ${g.id == st.regGid ? "selected" : ""}>${esc(g.name)}</option>`).join("")}</select>
+    ${students.map(s => `<div class="card click" data-a="regPick" data-id="${s.id}">${esc(s.name)}</div>`).join("") || `<div class="empty">Свободных имён нет</div>`}
+    <h2>Меня нет в списке</h2>
+    <input id="rn" placeholder="Фамилия Имя Отчество"><button class="b main" data-a="regNew">Добавить себя</button></div>`;
+}
+
+// ---------- студент ----------
+async function renderStudent(){
+  const {lessons} = await api("lessons", {date: st.date});
+  app.innerHTML = hero(me.student.name, "Группа " + me.student.group) + `<div class="wrap">${dayNav()}` +
+    (lessons.map(l => `<div class="card"><div class="row"><span class="time">${l.start}–${l.end}</span>
+      ${l.mark ? `<span class="chip fix ${l.mark}">${l.mark == "present" ? "Был" : "Не был"}</span>` : `<span class="chip fix">не отмечено</span>`}</div>
+      <b>${esc(l.title)}</b><br><small>${sub(l)}</small>
+      <div class="acts"><button class="b ok ${l.mark == "present" ? "on" : ""}" data-a="mark" data-id="${l.id}" data-s="present" ${l.can_mark ? "" : "disabled"}>✅ Был</button>
+      <button class="b bad ${l.mark == "absent" ? "on" : ""}" data-a="mark" data-id="${l.id}" data-s="absent" ${l.can_mark ? "" : "disabled"}>❌ Не был</button></div>
+      ${l.can_mark ? "" : `<small>Отметка доступна за ${me.before} мин до начала и ${me.after} мин после конца пары</small>`}</div>`).join("")
+    || `<div class="empty">В этот день пар нет</div>`) + `</div>`;
+}
+
+// ---------- владелец ----------
+async function renderOwner(){
+  const {groups} = await api("groups");
+  st.groups = groups;
+  if (!st.gid || !groups.find(g => g.id == st.gid)) st.gid = groups[0]?.id || null;
+  const tabs = `<div class="wrap"><div class="tabs"><button class="${st.tab == "marks" ? "on" : ""}" data-a="tab" data-t="marks">Отметки</button>
+    <button class="${st.tab == "groups" ? "on" : ""}" data-a="tab" data-t="groups">Группы и студенты</button></div>`;
+  app.innerHTML = hero("Журнал посещаемости", "Режим преподавателя") + tabs + `<div id="body"></div></div>`;
+  const body = document.getElementById("body");
+  body.innerHTML = st.tab == "marks" ? await ownerMarks() : ownerGroups();
+}
+async function ownerMarks(){
+  if (!st.groups.length) return `<div class="empty">Сначала создайте группу во вкладке «Группы и студенты»</div>`;
+  if (st.lesson) {
+    const r = await api("attendance", {lesson_id: st.lesson});
+    const p = r.students.filter(s => s.status == "present").length, a = r.students.filter(s => s.status == "absent").length;
+    return `<button class="b" data-a="back">‹ Назад</button><h2>${esc(r.lesson.title)}</h2>
+      <p class="hint">${r.lesson.start}–${r.lesson.end} · ✅ ${p} · ❌ ${a} · ⏳ ${r.students.length - p - a}</p>
+      <div class="card" style="margin-top:10px">${r.students.map(s => `<div class="st"><div class="nm">${esc(s.name)}<br>
+        <small>${s.status == "present" ? "был, отметился в " + s.time : s.status == "absent" ? "не был (" + s.time + ")" : s.linked ? "не отметился" : "ещё не вошёл в бот"}</small></div>
+        <div class="mini">${["present:✅", "absent:❌", "none:⏺"].map(x => { const [k, e] = x.split(":"); return `<button class="b sm ${(s.status || "none") == k ? "chip " + (k == "none" ? "" : k) : ""}" data-a="ovr" data-sid="${s.id}" data-s="${k}">${e}</button>`; }).join("")}</div></div>`).join("") || `<div class="empty">В группе нет студентов</div>`}</div>
+      <button class="b del" data-a="lessonDel" data-id="${r.lesson.id}">Удалить пару</button>`;
+  }
+  const {lessons} = await api("lessons", {group_id: st.gid, date: st.date});
+  return `<select id="gsel" data-a="gsel">${st.groups.map(g => `<option value="${g.id}" ${g.id == st.gid ? "selected" : ""}>${esc(g.name)}</option>`).join("")}</select>${dayNav()}` +
+    (lessons.map(l => `<div class="card click" data-a="openLesson" data-id="${l.id}"><span class="time">${l.start}–${l.end}</span><br><b>${esc(l.title)}</b><br>
+      <small>${sub(l)}</small><div style="margin-top:6px">✅ ${l.present} &nbsp; ❌ ${l.absent} &nbsp; из ${l.total}</div></div>`).join("")
+    || `<div class="empty">В этот день пар нет</div>`) + `<p class="hint" style="margin-top:14px">Выгрузка в Excel: команда /export ${esc(st.groups.find(g => g.id == st.gid)?.name || "")} в чате с ботом</p>`;
+}
+function ownerGroups(){
+  const g = st.groups;
+  return `<div class="card"><b>Новая группа</b><input id="gn" placeholder="Название, например ИВТ-21">
+    <input id="gu" placeholder="Ссылка на расписание ICS (необязательно)"><button class="b main" data-a="gAdd">Создать группу</button></div>` +
+    g.map(x => st.open == x.id ? `<div class="card"><div class="row"><b>${esc(x.name)}</b><button class="b sm fix" data-a="gOpen" data-id="0">Свернуть</button></div>
+      <h2 style="font-size:15px">Расписание</h2>
+      <input id="iu" placeholder="${me.tpl ? "Ссылка ICS (пусто — взять по названию группы)" : "Ссылка на ICS-календарь"}" value="${esc(x.url)}">
+      <button class="b main" data-a="imp" data-id="${x.id}">Загрузить расписание</button>
+      <h2 style="font-size:15px">Добавить пару вручную</h2>
+      <input id="ld" type="date" value="${st.date}"><div class="row"><input id="ls" type="time" value="09:00"><input id="le" type="time" value="10:30"></div>
+      <input id="lt" placeholder="Предмет"><input id="lp" placeholder="Преподаватель"><input id="lr" placeholder="Аудитория">
+      <button class="b main" data-a="lAdd" data-id="${x.id}">Добавить пару</button>
+      <h2 style="font-size:15px">Студенты (${x.students.length})</h2>
+      ${x.students.map(s => `<div class="st"><div class="nm">${esc(s.name)} ${s.linked ? "🔗" : ""}</div>
+        ${s.linked ? `<button class="b sm" data-a="sUnlink" data-id="${s.id}">отвязать</button>` : ""}<button class="b sm del" data-a="sDel" data-id="${s.id}">✕</button></div>`).join("")}
+      <textarea id="sn" placeholder="Вставьте список — по одному ФИО на строку" style="margin-top:10px"></textarea>
+      <button class="b main" data-a="sAdd" data-id="${x.id}">Добавить студентов</button>
+      <p class="hint" style="margin:8px 0">🔗 — студент уже вошёл в бот и привязан к имени</p>
+      <button class="b del" data-a="gDel" data-id="${x.id}">Удалить группу</button></div>`
+    : `<div class="card click" data-a="gOpen" data-id="${x.id}"><b>${esc(x.name)}</b><br><small>студентов: ${x.students.length}</small></div>`).join("");
+}
+
+// ---------- действия ----------
+const A = {
+  day: d => { st.date = addDays(st.date, +d.n); st.lesson = null; render(); },
+  tab: d => { st.tab = d.t; st.lesson = null; render(); },
+  back: () => { st.lesson = null; render(); },
+  openLesson: d => { st.lesson = +d.id; render(); },
+  regGroup: () => { st.regGid = +val("rg"); render(); },
+  regPick: d => safe(async () => { await api("register", {group_id: st.regGid, student_id: +d.id}); me = await api("me"); render(); }),
+  regNew: () => safe(async () => { await api("register", {group_id: st.regGid, name: val("rn")}); me = await api("me"); render(); }),
+  mark: d => safe(async () => { await api("mark", {lesson_id: +d.id, status: d.s}); tg.HapticFeedback?.notificationOccurred("success"); render(); }),
+  gsel: () => { st.gid = +val("gsel"); render(); },
+  ovr: d => safe(async () => { await api("override", {lesson_id: st.lesson, student_id: +d.sid, status: d.s}); render(); }),
+  lessonDel: () => { if (confirm("Удалить пару и все отметки?")) safe(async () => { await api("lesson_del", {lesson_id: st.lesson}); st.lesson = null; render(); }); },
+  gOpen: d => { st.open = +d.id || null; render(); },
+  gAdd: () => safe(async () => { await api("group_add", {name: val("gn"), url: val("gu")}); toast("Группа создана"); render(); }),
+  gDel: d => { if (confirm("Удалить группу со студентами, парами и отметками?")) safe(async () => { await api("group_del", {group_id: +d.id}); st.open = null; render(); }); },
+  sAdd: d => safe(async () => { const r = await api("students_add", {group_id: +d.id, names: val("sn")}); toast("Добавлено: " + r.added); render(); }),
+  sDel: d => { if (confirm("Удалить студента?")) safe(async () => { await api("student_del", {student_id: +d.id}); render(); }); },
+  sUnlink: d => safe(async () => { await api("student_unlink", {student_id: +d.id}); render(); }),
+  imp: d => safe(async () => { toast("Загружаю…"); const r = await api("import", {group_id: +d.id, url: val("iu")}); toast("Загружено пар: " + r.imported); render(); }),
+  lAdd: d => safe(async () => { await api("lesson_add", {group_id: +d.id, date: val("ld"), start: val("ls"), end: val("le"), title: val("lt"), teacher: val("lp"), room: val("lr")}); toast("Пара добавлена"); render(); }),
+};
+app.addEventListener("click", e => { const t = e.target.closest("[data-a]"); if (t && t.tagName != "SELECT" && A[t.dataset.a] && !t.disabled) A[t.dataset.a](t.dataset); });
+app.addEventListener("change", e => { const t = e.target; if (t.tagName == "SELECT" && A[t.dataset.a]) A[t.dataset.a](t.dataset); });
+init();
+</script>
+</body>
+</html>

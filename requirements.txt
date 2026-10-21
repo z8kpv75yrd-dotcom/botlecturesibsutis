@@ -1,0 +1,5 @@
+aiogram>=3.13,<4
+aiohttp>=3.9
+icalendar>=5.0
+recurring-ical-events>=2.2
+tzdata
